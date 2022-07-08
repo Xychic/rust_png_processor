@@ -5,6 +5,8 @@ use std::{
     slice::Iter,
 };
 
+use flate2::{write::ZlibEncoder, Compression};
+
 #[derive(Clone)]
 pub struct Data {
     pub data: Vec<u8>,
@@ -27,7 +29,7 @@ impl Debug for Data {
                     )
                 })
                 .collect::<Vec<_>>()
-                .join("\n")
+                .join(",\n")
         );
         write!(f, "{}", data_chunks)
     }
@@ -60,7 +62,7 @@ impl Debug for Chunk {
 }
 
 impl Chunk {
-    pub fn crc(name: &str, data: &Vec<u8>) -> u32 {
+    pub fn crc(name: &str, data: &[u8]) -> u32 {
         let mut all_data = Vec::with_capacity((4 + data.len()) as usize);
         for byte in ascii_to_bytes(&name) {
             all_data.push(byte);
@@ -75,7 +77,7 @@ impl Chunk {
         return Chunk::crc(&self.name, &self.data()) == self.crc;
     }
 
-    pub fn from_data(name: &str, data: &Vec<u8>) -> Chunk {
+    pub fn from_data(name: &str, data: &[u8]) -> Chunk {
         Chunk {
             size: data.len() as u32,
             name: name.to_owned(),
@@ -152,7 +154,9 @@ pub struct PNG {
     header: [u8; 8],
     pub ihdr: Chunk,
     pub dimension: (u32, u32),
-    pub data: Vec<Chunk>,
+    pub bit_depth: u8,
+    pub chunks: Vec<Chunk>,
+    pub data: Vec<Vec<u8>>,
     end: Chunk,
 }
 
@@ -168,6 +172,9 @@ impl PNG {
 
         let width_bytes = width.to_be_bytes();
         let height_bytes = height.to_be_bytes();
+
+        let bits_per_row = width as usize * bit_depth as usize;
+        let bytes_per_row = bits_per_row / 8 + if bits_per_row % 8 != 0 { 1 } else { 0 };
 
         PNG {
             header: HEADER,
@@ -189,13 +196,15 @@ impl PNG {
                     0, // No interlacing
                 ],
             ),
+            bit_depth,
             end: Chunk {
                 size: 0,
                 name: "IEND".to_string(),
                 data: Data { data: Vec::new() },
                 crc: 0xAE426082,
             },
-            data: Vec::new(),
+            chunks: Vec::new(),
+            data: vec![vec![0xFF; bytes_per_row]; height as usize],
             dimension: (width, height),
         }
     }
@@ -269,13 +278,15 @@ impl PNG {
                     0, // No interlacing
                 ],
             ),
+            bit_depth,
             end: Chunk {
                 size: 0,
                 name: "IEND".to_string(),
                 data: Data { data: Vec::new() },
                 crc: 0xAE426082,
             },
-            data: chunks[1..(chunk_count - 1)].to_vec(),
+            chunks: chunks[1..(chunk_count - 1)].to_vec(),
+            data: Vec::new(),
             dimension: (width, height),
         })
     }
@@ -284,18 +295,49 @@ impl PNG {
         let mut file = File::create(filepath).unwrap();
         file.write_all(&self.header).unwrap();
         file.write_all(&self.ihdr.to_bytes()).unwrap();
-        if self.data.iter().filter(|c| c.name == "IDAT").count() == 0 {
-            file.write_all(&Chunk::from_data("IDAT", &Vec::new()).to_bytes())
-                .unwrap();
+
+        // TODO refactor to lump every 1024
+        let (width, height) = self.dimension;
+        let mut uncompressed = Vec::with_capacity((height * (width + 1)) as usize);
+
+        for row in &self.data {
+            uncompressed.push(0x00); // No filter
+            for &byte in row {
+                uncompressed.push(byte);
+            }
         }
-        for chunk in &self.data {
+
+        let mut e = ZlibEncoder::new(Vec::new(), Compression::best());
+        e.write(&uncompressed).unwrap();
+        let compressed = e.finish().unwrap();
+
+        for chunk in &self.chunks {
             file.write_all(&chunk.to_bytes()).unwrap();
         }
+        file.write_all(&Chunk::from_data("IDAT", &compressed).to_bytes())
+            .unwrap();
+
         file.write_all(&self.end.to_bytes()).unwrap();
     }
 
-    pub fn add_raw_data(&mut self, data: &Vec<u8>) {
-        self.data.push(Chunk::from_data("IDAT", data));
+    pub fn put_pixel(&mut self, pixel_data: u8, x: u32, y: u32) {
+        if pixel_data & 0x01 == 1 {
+            self.data[y as usize][x as usize / 8] |= 0x80 >> (x % 8);
+        } else {
+            self.data[y as usize][x as usize / 8] &= !(0x80 >> (x % 8));
+        }
+    }
+
+    fn get_pixel_location(&self, x: u32, y: u32) -> usize {
+        assert!(self.bit_depth == 1); // Only working with 1 bit images right now
+
+        let (width, height) = self.dimension;
+        let bits_per_row = width as usize * self.bit_depth as usize;
+        let bytes_per_row = bits_per_row / 8 + if bits_per_row % 8 != 0 { 1 } else { 0 };
+
+        let pos = bytes_per_row * y as usize + (x / 8) as usize;
+
+        pos
     }
 }
 

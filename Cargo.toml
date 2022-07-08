@@ -4,3 +4,4 @@ name = "png_writer"
 version = "0.1.0"
 [dependencies]
 crc32fast = "*"
+flate2 = "1.0.24"
