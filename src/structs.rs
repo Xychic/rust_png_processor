@@ -284,13 +284,12 @@ impl PNG {
         let mut file = File::create(filepath).unwrap();
         file.write_all(&self.header).unwrap();
         file.write_all(&self.ihdr.to_bytes()).unwrap();
-        if self.data.len() == 0 {
+        if self.data.iter().filter(|c| c.name == "IDAT").count() == 0 {
             file.write_all(&Chunk::from_data("IDAT", &Vec::new()).to_bytes())
                 .unwrap();
-        } else {
-            for chunk in &self.data {
-                file.write_all(&chunk.to_bytes()).unwrap();
-            }
+        }
+        for chunk in &self.data {
+            file.write_all(&chunk.to_bytes()).unwrap();
         }
         file.write_all(&self.end.to_bytes()).unwrap();
     }
