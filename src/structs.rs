@@ -5,7 +5,7 @@ use std::{
     slice::Iter,
 };
 
-use flate2::{write::ZlibEncoder, Compression};
+use libflate::zlib::Encoder;
 
 #[derive(Clone)]
 pub struct Data {
@@ -292,13 +292,19 @@ impl PNG {
     }
 
     pub fn save(&self, filepath: &str) {
+    println!("Saving...");
+
         let mut file = File::create(filepath).unwrap();
         file.write_all(&self.header).unwrap();
         file.write_all(&self.ihdr.to_bytes()).unwrap();
 
-        // TODO refactor to lump every 1024
-        let (width, height) = self.dimension;
-        let mut uncompressed = Vec::with_capacity((height * (width + 1)) as usize);
+        for chunk in &self.chunks {
+            file.write_all(&chunk.to_bytes()).unwrap();
+        }
+
+        let row_len = self.data[0].len();
+        let total_ops = self.data.len() * (row_len + 1);
+        let mut uncompressed = Vec::with_capacity(total_ops);
 
         for row in &self.data {
             uncompressed.push(0x00); // No filter
@@ -306,18 +312,23 @@ impl PNG {
                 uncompressed.push(byte);
             }
         }
-
-        let mut e = ZlibEncoder::new(Vec::new(), Compression::best());
-        e.write(&uncompressed).unwrap();
-        let compressed = e.finish().unwrap();
-
-        for chunk in &self.chunks {
-            file.write_all(&chunk.to_bytes()).unwrap();
+        println!("Compressing data...");
+        let data = Self::compress_block(&uncompressed);
+        println!("Writing chunks...");
+        for block in data.chunks(1024) {
+            file.write_all(&Chunk::from_data("IDAT", block).to_bytes())
+                .unwrap();
         }
-        file.write_all(&Chunk::from_data("IDAT", &compressed).to_bytes())
-            .unwrap();
-
         file.write_all(&self.end.to_bytes()).unwrap();
+
+    println!("Saved!");
+
+    }
+
+    fn compress_block(data: &[u8]) -> Vec<u8> {
+        let mut encoder = Encoder::new(Vec::new()).unwrap();
+        encoder.write_all(data).unwrap();
+        encoder.finish().into_result().unwrap()
     }
 
     pub fn put_pixel(&mut self, pixel_data: u8, x: u32, y: u32) {
@@ -326,18 +337,6 @@ impl PNG {
         } else {
             self.data[y as usize][x as usize / 8] &= !(0x80 >> (x % 8));
         }
-    }
-
-    fn get_pixel_location(&self, x: u32, y: u32) -> usize {
-        assert!(self.bit_depth == 1); // Only working with 1 bit images right now
-
-        let (width, height) = self.dimension;
-        let bits_per_row = width as usize * self.bit_depth as usize;
-        let bytes_per_row = bits_per_row / 8 + if bits_per_row % 8 != 0 { 1 } else { 0 };
-
-        let pos = bytes_per_row * y as usize + (x / 8) as usize;
-
-        pos
     }
 }
 

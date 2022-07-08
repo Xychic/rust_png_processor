@@ -4,8 +4,8 @@ mod structs;
 use structs::{ColourType, PNG};
 
 fn main() {
-    let width = 101;
-    let height = 101;
+    let width = 250_000;
+    let height = 250_000;
     let mut image = PNG::new(width, height, 1, ColourType::Grayscale);
 
     for index in 0..width.min(height) {
